@@ -1,0 +1,7 @@
+uploads/*
+!uploads/.gitkeep
+.env
+.env.*
+!.env.example
+*.log
+
