@@ -751,6 +751,8 @@ $logged_in = !empty($_SESSION['user_id']);
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icon-192.png">
     <meta name="theme-color" content="#123e35">
     <meta name="description" content="Signature Properties HRMS – Workforce management, face check-in, GPS geofencing, payroll.">
     <title>Signature Properties HRMS | Workforce Management</title>
@@ -968,15 +970,78 @@ $logged_in = !empty($_SESSION['user_id']);
         .empty-state { text-align: center; padding: 48px 24px; color: var(--muted); font-size: 14px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; }
         .empty-state svg { width: 48px; color: var(--line); }
 
+        /* ── Mobile Header ── */
+        .mobile-header {
+            display: none;
+            background: var(--green);
+            color: #fff;
+            padding: 12px 20px;
+            align-items: center;
+            justify-content: space-between;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 60px;
+            z-index: 100;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .menu-toggle {
+            background: transparent;
+            border: 0;
+            color: #fff;
+            padding: 4px;
+            display: grid;
+            place-items: center;
+        }
+        .mobile-brand {
+            font-family: Manrope;
+            font-weight: 800;
+            font-size: 18px;
+        }
+        .sidebar-overlay-bg {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.4);
+            z-index: 15;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s;
+        }
+        .sidebar-overlay-bg.open {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
         /* ── Responsive ── */
         @media (max-width: 1024px) {
-            .app { grid-template-columns: 1fr; }
-            .sidebar { display: none; }
+            .app { grid-template-columns: 1fr; padding-top: 60px; }
+            .mobile-header { display: flex; }
+            .sidebar {
+                transform: translateX(-100%);
+                transition: transform 0.3s ease-in-out;
+                position: fixed;
+                inset: 0 auto 0 0;
+                height: 100vh;
+                z-index: 20;
+            }
+            .sidebar.open {
+                transform: translateX(0);
+            }
             .main { margin-left: 0; padding: 20px; }
-            .grid-3 { grid-template-columns: 1fr; }
-            .grid-6 { grid-template-columns: repeat(3, 1fr); }
-            .grid-2-1 { grid-template-columns: 1fr; }
-            .attendance-setup-grid { grid-template-columns: 1fr; }
+            .grid-3 { grid-template-columns: 1fr; gap: 16px; }
+            .grid-6 { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+            .grid-2-1 { grid-template-columns: 1fr; gap: 16px; }
+            .attendance-setup-grid { grid-template-columns: 1fr; gap: 16px; }
+            
+            header { flex-direction: column; align-items: flex-start; gap: 12px; }
+            .header-actions { width: 100%; }
+            .header-actions .btn { width: 100%; justify-content: center; }
+            .table-header { flex-direction: column; align-items: flex-start; gap: 12px; }
+            .table-filters { width: 100%; flex-wrap: wrap; }
+            .table-filters input, .table-filters select { flex: 1; }
+            .modal-card { width: 95%; }
+            .form-grid { grid-template-columns: 1fr; }
         }
     </style>
 </head>
@@ -1044,6 +1109,20 @@ $logged_in = !empty($_SESSION['user_id']);
 <?php else: ?>
     <!-- ── APPLICATION SHELL ── -->
     <div class="app">
+        
+        <!-- MOBILE HEADER -->
+        <div class="mobile-header">
+            <button class="menu-toggle" onclick="toggleSidebar()">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 24px; height: 24px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+            </button>
+            <div class="mobile-brand">
+                <span>Signature HRMS</span>
+            </div>
+            <div style="width: 24px;"></div>
+        </div>
+
+        <!-- SIDEBAR OVERLAY -->
+        <div class="sidebar-overlay-bg" id="sidebarOverlayBg" onclick="toggleSidebar()"></div>
         
         <!-- SIDEBAR -->
         <aside class="sidebar">
@@ -1978,8 +2057,24 @@ $logged_in = !empty($_SESSION['user_id']);
             return R * c; // in metres
         }
 
+        // Toggle sidebar on mobile
+        function toggleSidebar() {
+            const sidebar = document.querySelector('.sidebar');
+            const overlay = document.getElementById('sidebarOverlayBg');
+            sidebar.classList.toggle('open');
+            overlay.classList.toggle('open');
+        }
+
         // Routing Controller
         function goTo(view) {
+            // Close mobile menu if open
+            const sidebar = document.querySelector('.sidebar');
+            const overlay = document.getElementById('sidebarOverlayBg');
+            if (sidebar.classList.contains('open')) {
+                sidebar.classList.remove('open');
+                overlay.classList.remove('open');
+            }
+
             document.querySelectorAll('.app-view').forEach(v => v.style.display = 'none');
             document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
             
@@ -3158,6 +3253,11 @@ $logged_in = !empty($_SESSION['user_id']);
         // On document load
         window.addEventListener('DOMContentLoaded', () => {
             initApp();
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.register('sw.js')
+                .then(reg => console.log('Service Worker Registered', reg))
+                .catch(err => console.error('Service Worker Register Failed', err));
+            }
         });
     </script>
 <?php endif; ?>
