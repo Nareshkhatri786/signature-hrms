@@ -2400,6 +2400,14 @@ $logged_in = !empty($_SESSION['user_id']);
                     empSelect.value = currentUser.emp_id;
                     empSelect.disabled = true;
                     onCheckinEmpChange();
+                } else if (currentUser && currentUser.role === 'manager') {
+                    // Try to find a matching employee profile for the logged in manager
+                    const match = globalEmployees.find(e => e.name.toLowerCase() === currentUser.name.toLowerCase() || e.code.toLowerCase() === currentUser.username.toLowerCase());
+                    if (match) {
+                        empSelect.value = match.id;
+                        empSelect.disabled = true;
+                        onCheckinEmpChange();
+                    }
                 }
             } catch (err) {}
         }
