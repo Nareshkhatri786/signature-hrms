@@ -17,6 +17,15 @@ try {
     $pdo = new PDO("mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4", DB_USER, DB_PASS);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    
+    // Auto-migrate database: add password to employees if it doesn't exist
+    try {
+        $pdo->query("SELECT password FROM employees LIMIT 1");
+    } catch (PDOException $ex) {
+        $pdo->exec("ALTER TABLE employees ADD COLUMN password VARCHAR(255) NULL");
+        $default_hash = password_hash('Signature@2026', PASSWORD_BCRYPT);
+        $pdo->exec("UPDATE employees SET password = '$default_hash' WHERE password IS NULL");
+    }
 } catch (PDOException $e) {
     $db_error = "Could not connect to the database. Make sure setup.php has been run and details are correct. Error: " . $e->getMessage();
 }
@@ -57,6 +66,7 @@ if (isset($_GET['api'])) {
                 $username = trim($data['username'] ?? '');
                 $password = trim($data['password'] ?? '');
                 
+                // First try standard users table
                 $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ?");
                 $stmt->execute([$username]);
                 $user = $stmt->fetch();
@@ -67,6 +77,7 @@ if (isset($_GET['api'])) {
                     $_SESSION['name'] = $user['name'];
                     $_SESSION['role'] = $user['role'];
                     $_SESSION['project_id'] = $user['project_id'];
+                    $_SESSION['emp_id'] = null;
                     
                     echo json_encode([
                         'success' => true,
@@ -75,12 +86,39 @@ if (isset($_GET['api'])) {
                             'username' => $user['username'],
                             'name' => $user['name'],
                             'role' => $user['role'],
-                            'project_id' => $user['project_id']
+                            'project_id' => $user['project_id'],
+                            'emp_id' => null
                         ]
                     ]);
                 } else {
-                    http_response_code(400);
-                    echo json_encode(['error' => 'Invalid username or password']);
+                    // Try employees table (log in with employee code and password)
+                    $stmt_emp = $pdo->prepare("SELECT * FROM employees WHERE code = ? AND status = 'Active'");
+                    $stmt_emp->execute([$username]);
+                    $emp = $stmt_emp->fetch();
+                    
+                    if ($emp && !empty($emp['password']) && password_verify($password, $emp['password'])) {
+                        $_SESSION['user_id'] = 'emp_' . $emp['id'];
+                        $_SESSION['username'] = $emp['code'];
+                        $_SESSION['name'] = $emp['name'];
+                        $_SESSION['role'] = 'employee';
+                        $_SESSION['project_id'] = $emp['project_id'];
+                        $_SESSION['emp_id'] = $emp['id'];
+                        
+                        echo json_encode([
+                            'success' => true,
+                            'user' => [
+                                'id' => $_SESSION['user_id'],
+                                'username' => $emp['code'],
+                                'name' => $emp['name'],
+                                'role' => 'employee',
+                                'project_id' => $emp['project_id'],
+                                'emp_id' => $emp['id']
+                            ]
+                        ]);
+                    } else {
+                        http_response_code(400);
+                        echo json_encode(['error' => 'Invalid username/code or password']);
+                    }
                 }
                 break;
                 
@@ -100,7 +138,8 @@ if (isset($_GET['api'])) {
                             'username' => $_SESSION['username'],
                             'name' => $_SESSION['name'],
                             'role' => $_SESSION['role'],
-                            'project_id' => $_SESSION['project_id']
+                            'project_id' => $_SESSION['project_id'] ?? null,
+                            'emp_id' => $_SESSION['emp_id'] ?? null
                         ]
                     ]);
                 }
@@ -109,16 +148,19 @@ if (isset($_GET['api'])) {
             case 'dashboard':
                 $require_auth();
                 $is_mgr = $_SESSION['role'] === 'manager';
+                $is_emp = $_SESSION['role'] === 'employee';
                 $mgr_pid = $_SESSION['project_id'];
+                $emp_id = $_SESSION['emp_id'] ?? null;
                 
                 // Active employee count
                 $emp_sql = "SELECT COUNT(*) FROM employees WHERE status = 'Active'";
                 if ($is_mgr) $emp_sql .= " AND project_id = " . (int)$mgr_pid;
+                if ($is_emp) $emp_sql .= " AND id = " . (int)$emp_id;
                 $total_employees = (int) $pdo->query($emp_sql)->fetchColumn();
                 
                 // Total Projects
                 $proj_sql = "SELECT COUNT(*) FROM projects";
-                if ($is_mgr) $proj_sql .= " WHERE id = " . (int)$mgr_pid;
+                if ($is_mgr || $is_emp) $proj_sql .= " WHERE id = " . (int)$mgr_pid;
                 $total_projects = (int) $pdo->query($proj_sql)->fetchColumn();
                 
                 // Today Stats
@@ -127,6 +169,7 @@ if (isset($_GET['api'])) {
                             JOIN employees e ON a.emp_id = e.id 
                             WHERE a.attendance_date = CURRENT_DATE()";
                 if ($is_mgr) $att_sql .= " AND e.project_id = " . (int)$mgr_pid;
+                if ($is_emp) $att_sql .= " AND e.id = " . (int)$emp_id;
                 $stmt = $pdo->query($att_sql);
                 $today_records = $stmt->fetchAll();
                 
@@ -164,13 +207,17 @@ if (isset($_GET['api'])) {
             case 'employees':
                 $require_auth();
                 $is_mgr = $_SESSION['role'] === 'manager';
+                $is_emp = $_SESSION['role'] === 'employee';
                 $mgr_pid = $_SESSION['project_id'];
+                $emp_id = $_SESSION['emp_id'] ?? null;
                 
                 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                     $sql = "SELECT e.*, p.name as project_name FROM employees e 
                             LEFT JOIN projects p ON e.project_id = p.id";
                     if ($is_mgr) {
                         $sql .= " WHERE e.project_id = " . (int)$mgr_pid;
+                    } elseif ($is_emp) {
+                        $sql .= " WHERE e.id = " . (int)$emp_id;
                     }
                     $sql .= " ORDER BY e.id DESC";
                     echo json_encode($pdo->query($sql)->fetchAll());
@@ -179,8 +226,8 @@ if (isset($_GET['api'])) {
                     $action = $data['action'] ?? '';
                     
                     if ($action === 'save') {
-                        // Manager cannot add/edit employees, only super_admin
-                        if ($is_mgr) {
+                        // Manager or employee cannot add/edit employees, only super_admin
+                        if ($is_mgr || $is_emp) {
                             http_response_code(403);
                             echo json_encode(['error' => 'Forbidden']);
                             exit;
@@ -188,28 +235,41 @@ if (isset($_GET['api'])) {
                         
                         $emp = $data['data'];
                         $id = $emp['id'] ?? null;
+                        $pass_hash = !empty($emp['password']) ? password_hash($emp['password'], PASSWORD_BCRYPT) : null;
                         
                         if ($id) {
-                            $stmt = $pdo->prepare("UPDATE employees SET code = ?, name = ?, role = ?, project_id = ?, salary = ?, petrol = ?, phone = ?, status = ?, shift_type = ?, join_date = ?, notes = ?, incentive_config = ? WHERE id = ?");
-                            $stmt->execute([
-                                $emp['code'], $emp['name'], $emp['role'], 
-                                !empty($emp['project_id']) ? $emp['project_id'] : null, 
-                                $emp['salary'], $emp['petrol'], $emp['phone'], $emp['status'], 
-                                $emp['shift_type'], $emp['join_date'] ?: null, $emp['notes'], 
-                                json_encode($emp['incentive_config']), $id
-                            ]);
+                            if ($pass_hash) {
+                                $stmt = $pdo->prepare("UPDATE employees SET code = ?, name = ?, role = ?, project_id = ?, salary = ?, petrol = ?, phone = ?, status = ?, shift_type = ?, join_date = ?, notes = ?, incentive_config = ?, password = ? WHERE id = ?");
+                                $stmt->execute([
+                                    $emp['code'], $emp['name'], $emp['role'], 
+                                    !empty($emp['project_id']) ? $emp['project_id'] : null, 
+                                    $emp['salary'], $emp['petrol'], $emp['phone'], $emp['status'], 
+                                    $emp['shift_type'], $emp['join_date'] ?: null, $emp['notes'], 
+                                    json_encode($emp['incentive_config']), $pass_hash, $id
+                                ]);
+                            } else {
+                                $stmt = $pdo->prepare("UPDATE employees SET code = ?, name = ?, role = ?, project_id = ?, salary = ?, petrol = ?, phone = ?, status = ?, shift_type = ?, join_date = ?, notes = ?, incentive_config = ? WHERE id = ?");
+                                $stmt->execute([
+                                    $emp['code'], $emp['name'], $emp['role'], 
+                                    !empty($emp['project_id']) ? $emp['project_id'] : null, 
+                                    $emp['salary'], $emp['petrol'], $emp['phone'], $emp['status'], 
+                                    $emp['shift_type'], $emp['join_date'] ?: null, $emp['notes'], 
+                                    json_encode($emp['incentive_config']), $id
+                                ]);
+                            }
                             
                             // Log activity
                             $stmt_log = $pdo->prepare("INSERT INTO activity_log (icon, message) VALUES ('check', ?)");
                             $stmt_log->execute(["Employee <strong>{$emp['name']}</strong> updated."]);
                         } else {
-                            $stmt = $pdo->prepare("INSERT INTO employees (code, name, role, project_id, salary, petrol, phone, status, shift_type, join_date, notes, incentive_config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                            $default_pass = $pass_hash ?: password_hash('Signature@2026', PASSWORD_BCRYPT);
+                            $stmt = $pdo->prepare("INSERT INTO employees (code, name, role, project_id, salary, petrol, phone, status, shift_type, join_date, notes, incentive_config, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                             $stmt->execute([
                                 $emp['code'], $emp['name'], $emp['role'], 
                                 !empty($emp['project_id']) ? $emp['project_id'] : null, 
                                 $emp['salary'], $emp['petrol'], $emp['phone'], $emp['status'], 
                                 $emp['shift_type'], $emp['join_date'] ?: null, $emp['notes'], 
-                                json_encode($emp['incentive_config'])
+                                json_encode($emp['incentive_config']), $default_pass
                             ]);
                             
                             // Log activity
@@ -218,7 +278,7 @@ if (isset($_GET['api'])) {
                         }
                         echo json_encode(['success' => true]);
                     } elseif ($action === 'delete') {
-                        if ($is_mgr) {
+                        if ($is_mgr || $is_emp) {
                             http_response_code(403);
                             echo json_encode(['error' => 'Forbidden']);
                             exit;
@@ -302,10 +362,12 @@ if (isset($_GET['api'])) {
                 }
                 break;
 
-            case 'attendance':
+             case 'attendance':
                 $require_auth();
                 $is_mgr = $_SESSION['role'] === 'manager';
+                $is_emp = $_SESSION['role'] === 'employee';
                 $mgr_pid = $_SESSION['project_id'];
+                $emp_id = $_SESSION['emp_id'] ?? null;
                 
                 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                     $date = $_GET['date'] ?? date('Y-m-d');
@@ -320,6 +382,9 @@ if (isset($_GET['api'])) {
                     if ($is_mgr) {
                         $sql .= " AND e.project_id = ?";
                         $params[] = $mgr_pid;
+                    } elseif ($is_emp) {
+                        $sql .= " AND e.id = ?";
+                        $params[] = $emp_id;
                     }
                     
                     if (!empty($_GET['status'])) {
@@ -474,6 +539,11 @@ if (isset($_GET['api'])) {
                         
                         echo json_encode(['success' => true]);
                     } elseif ($action === 'mark_absent') {
+                        if ($is_emp) {
+                            http_response_code(403);
+                            echo json_encode(['error' => 'Forbidden']);
+                            exit;
+                        }
                         // Mark all employees who have not checked in today as absent
                         $date = $data['date'] ?? date('Y-m-d');
                         
@@ -509,6 +579,11 @@ if (isset($_GET['api'])) {
                         $stmt->execute([$reason, $att_id]);
                         echo json_encode(['success' => true]);
                     } elseif ($action === 'review') {
+                        if ($is_emp) {
+                            http_response_code(403);
+                            echo json_encode(['error' => 'Forbidden']);
+                            exit;
+                        }
                         $att_id = (int)$data['att_id'];
                         $decision = $data['decision'] ?? 'rejected'; // approved | rejected
                         $remark = trim($data['remark'] ?? '');
@@ -531,7 +606,9 @@ if (isset($_GET['api'])) {
             case 'attendance/pending_regularizations':
                 $require_auth();
                 $is_mgr = $_SESSION['role'] === 'manager';
+                $is_emp = $_SESSION['role'] === 'employee';
                 $mgr_pid = $_SESSION['project_id'];
+                $emp_id = $_SESSION['emp_id'] ?? null;
                 
                 $sql = "SELECT a.*, e.name as employee_name, e.role as employee_role, p.name as project_name 
                         FROM attendance a 
@@ -541,6 +618,8 @@ if (isset($_GET['api'])) {
                 
                 if ($is_mgr) {
                     $sql .= " AND e.project_id = " . (int)$mgr_pid;
+                } elseif ($is_emp) {
+                    $sql .= " AND e.id = " . (int)$emp_id;
                 }
                 
                 $sql .= " ORDER BY a.regularization_submitted_at DESC";
@@ -551,7 +630,9 @@ if (isset($_GET['api'])) {
                 $require_auth();
                 $month = $_GET['month'] ?? date('Y-m');
                 $is_mgr = $_SESSION['role'] === 'manager';
+                $is_emp = $_SESSION['role'] === 'employee';
                 $mgr_pid = $_SESSION['project_id'];
+                $emp_id = $_SESSION['emp_id'] ?? null;
                 
                 $sql = "SELECT a.*, e.name as employee_name, e.role as employee_role 
                         FROM attendance a 
@@ -562,6 +643,9 @@ if (isset($_GET['api'])) {
                 if ($is_mgr) {
                     $sql .= " AND e.project_id = ?";
                     $params[] = $mgr_pid;
+                } elseif ($is_emp) {
+                    $sql .= " AND e.id = ?";
+                    $params[] = $emp_id;
                 }
                 
                 $stmt = $pdo->prepare($sql);
@@ -573,7 +657,9 @@ if (isset($_GET['api'])) {
                 $require_auth();
                 $month = $_GET['month'] ?? date('Y-m');
                 $is_mgr = $_SESSION['role'] === 'manager';
+                $is_emp = $_SESSION['role'] === 'employee';
                 $mgr_pid = $_SESSION['project_id'];
+                $emp_id = $_SESSION['emp_id'] ?? null;
                 
                 // Fetch active employees
                 $sql_emp = "SELECT e.*, p.name as project_name FROM employees e 
@@ -581,6 +667,8 @@ if (isset($_GET['api'])) {
                             WHERE e.status = 'Active'";
                 if ($is_mgr) {
                     $sql_emp .= " AND e.project_id = " . (int)$mgr_pid;
+                } elseif ($is_emp) {
+                    $sql_emp .= " AND e.id = " . (int)$emp_id;
                 }
                 $emps = $pdo->query($sql_emp)->fetchAll();
                 
@@ -652,18 +740,27 @@ if (isset($_GET['api'])) {
                 
             case 'advances':
                 $require_auth();
+                $is_mgr = $_SESSION['role'] === 'manager';
+                $is_emp = $_SESSION['role'] === 'employee';
+                $mgr_pid = $_SESSION['project_id'];
+                $emp_id = $_SESSION['emp_id'] ?? null;
+                
                 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-                    $is_mgr = $_SESSION['role'] === 'manager';
-                    $mgr_pid = $_SESSION['project_id'];
-                    
                     $sql = "SELECT a.*, e.name as employee_name, e.code as employee_code FROM advances a 
                             JOIN employees e ON a.emp_id = e.id";
                     if ($is_mgr) {
                         $sql .= " WHERE e.project_id = " . (int)$mgr_pid;
+                    } elseif ($is_emp) {
+                        $sql .= " WHERE a.emp_id = " . (int)$emp_id;
                     }
                     $sql .= " ORDER BY a.id DESC";
                     echo json_encode($pdo->query($sql)->fetchAll());
                 } elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {
+                    if ($is_emp) {
+                        http_response_code(403);
+                        echo json_encode(['error' => 'Forbidden']);
+                        exit;
+                    }
                     $data = json_decode(file_get_contents('php://input'), true);
                     $action = $data['action'] ?? '';
                     
@@ -1733,6 +1830,13 @@ $logged_in = !empty($_SESSION['user_id']);
                         </div>
                     </div>
 
+                    <div class="form-grid mt-3">
+                        <div class="field">
+                            <label>Portal Login Password</label>
+                            <input type="password" id="empPassword" placeholder="Leave blank to keep existing or default (Signature@2026)">
+                        </div>
+                    </div>
+
                     <div class="field mt-3">
                         <label>Notes</label>
                         <textarea id="empNotes" rows="2" style="width: 100%; border:1.5px solid var(--line); border-radius:10px; padding:10px;"></textarea>
@@ -2105,7 +2209,13 @@ $logged_in = !empty($_SESSION['user_id']);
                 if (data.logged_in) {
                     currentUser = data.user;
                     document.getElementById('sidebarUserName').textContent = currentUser.name;
-                    document.getElementById('sidebarUserRole').textContent = currentUser.role === 'super_admin' ? 'Super Admin' : 'Project Manager';
+                    
+                    let roleDisplay = 'Employee';
+                    if (currentUser.role === 'super_admin') roleDisplay = 'Super Admin';
+                    else if (currentUser.role === 'manager') roleDisplay = 'Project Manager';
+                    else if (currentUser.role === 'employee') roleDisplay = 'Employee Portal';
+                    
+                    document.getElementById('sidebarUserRole').textContent = roleDisplay;
                     document.getElementById('sidebarUserAvatar').textContent = initials(currentUser.name);
                     
                     // Hide pages according to privileges
@@ -2114,6 +2224,16 @@ $logged_in = !empty($_SESSION['user_id']);
                         document.getElementById('nav-policy').style.display = 'none';
                         document.getElementById('nav-users').style.display = 'none';
                         document.getElementById('addEmployeeBtn').style.display = 'none';
+                    } else if (currentUser.role === 'employee') {
+                        document.getElementById('nav-projects').style.display = 'none';
+                        document.getElementById('nav-policy').style.display = 'none';
+                        document.getElementById('nav-users').style.display = 'none';
+                        document.getElementById('nav-employees').style.display = 'none';
+                        // Hide buttons and controls only meant for admins/managers
+                        const addEmpBtn = document.getElementById('addEmployeeBtn');
+                        if (addEmpBtn) addEmpBtn.style.display = 'none';
+                        const markAbsentBtn = document.querySelector('.header-actions button');
+                        if (markAbsentBtn) markAbsentBtn.style.display = 'none';
                     }
                     
                     // Start clock
@@ -2275,7 +2395,12 @@ $logged_in = !empty($_SESSION['user_id']);
                 const projSelect = document.getElementById('verificationProject');
                 projSelect.innerHTML = '<option value="">Select Project...</option>' +
                     globalProjects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
-                    
+                
+                if (currentUser && currentUser.role === 'employee' && currentUser.emp_id) {
+                    empSelect.value = currentUser.emp_id;
+                    empSelect.disabled = true;
+                    onCheckinEmpChange();
+                }
             } catch (err) {}
         }
 
@@ -2668,6 +2793,7 @@ $logged_in = !empty($_SESSION['user_id']);
         async function openAddEmployeeModal() {
             document.getElementById('employeeForm').reset();
             document.getElementById('empId').value = '';
+            document.getElementById('empPassword').value = '';
             document.getElementById('empModalTitle').textContent = 'Add Employee';
             
             await populateProjectsDropdown('empProject');
@@ -2695,6 +2821,7 @@ $logged_in = !empty($_SESSION['user_id']);
             document.getElementById('empShiftType').value = emp.shift_type;
             document.getElementById('empJoinDate').value = emp.join_date || '';
             document.getElementById('empNotes').value = emp.notes || '';
+            document.getElementById('empPassword').value = '';
             
             await populateProjectsDropdown('empProject', emp.project_id || '');
             
@@ -2769,7 +2896,8 @@ $logged_in = !empty($_SESSION['user_id']);
                     shift_type: document.getElementById('empShiftType').value,
                     join_date: document.getElementById('empJoinDate').value || null,
                     notes: document.getElementById('empNotes').value,
-                    incentive_config: incConfig
+                    incentive_config: incConfig,
+                    password: document.getElementById('empPassword').value
                 }
             };
             
