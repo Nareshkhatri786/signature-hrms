@@ -801,7 +801,7 @@ $logged_in = !empty($_SESSION['user_id']);
         .login-err { background: #fdeceb; color: #bd4e49; border-radius: 9px; padding: 10px 14px; font-size: 13px; margin-bottom: 16px; text-align: center; }
 
         /* ── App shell ── */
-        .app { min-height: 100vh; display: grid; grid-template-columns: var(--sidebar-w) 1fr; }
+        .app { min-height: 100vh; }
 
         /* ── Sidebar ── */
         .sidebar {
@@ -1051,12 +1051,8 @@ $logged_in = !empty($_SESSION['user_id']);
     <!-- ── LOGIN WRAPPER ── -->
     <div class="login-wrap">
         <div class="login-card">
-            <div class="login-logo">
-                <div class="login-logo-mark">SP</div>
-                <div>
-                    <span>Signature Properties</span>
-                    <small>Workforce HRMS Suite</small>
-                </div>
+            <div class="login-logo" style="justify-content: center; margin-bottom: 24px;">
+                <img src="logo.png" alt="Signature Properties Logo" style="max-height: 80px; width: auto; object-fit: contain;">
             </div>
             <h1>Welcome back</h1>
             <p>Enter your credentials to manage workforce operations</p>
@@ -1115,8 +1111,8 @@ $logged_in = !empty($_SESSION['user_id']);
             <button class="menu-toggle" onclick="toggleSidebar()">
                 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 24px; height: 24px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
             </button>
-            <div class="mobile-brand">
-                <span>Signature HRMS</span>
+            <div class="mobile-brand" style="background: #fff; padding: 4px 10px; border-radius: 8px; display: flex; align-items: center; max-height: 40px; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
+                <img src="logo.png" alt="Signature Properties Logo" style="max-height: 30px; width: auto; object-fit: contain;">
             </div>
             <div style="width: 24px;"></div>
         </div>
@@ -1126,12 +1122,8 @@ $logged_in = !empty($_SESSION['user_id']);
         
         <!-- SIDEBAR -->
         <aside class="sidebar">
-            <div class="brand">
-                <div class="brand-mark">SP</div>
-                <div>
-                    Signature Properties
-                    <small style="display:block; font-size:10px; color:#8dac9f; font-weight:normal;">HRMS Portal</small>
-                </div>
+            <div class="brand" style="background: #fff; padding: 12px; border-radius: 12px; margin-bottom: 24px; display: flex; justify-content: center; align-items: center; box-shadow: 0 4px 12px rgba(0,0,0,0.08);">
+                <img src="logo.png" alt="Signature Properties Logo" style="max-height: 52px; width: auto; object-fit: contain;">
             </div>
             
             <div class="nav-label">HR OPERATION</div>
