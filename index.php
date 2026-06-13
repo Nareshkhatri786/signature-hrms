@@ -1384,7 +1384,7 @@ $logged_in = !empty($_SESSION['user_id']);
                             <h2>Verification Settings</h2>
                             <p class="text-muted" style="font-size: 13px; margin-bottom: 20px;">Verification checks simulated based on geofencing coordinate ranges.</p>
                             
-                            <div class="field">
+                            <div class="field" id="verificationProjectField">
                                 <label>Target Project Location (Geofence Reference)</label>
                                 <div style="display: flex; gap: 12px;">
                                     <select id="verificationProject" class="table-select" style="flex: 1;" onchange="onVerificationProjectChange()">
@@ -2421,8 +2421,10 @@ $logged_in = !empty($_SESSION['user_id']);
                 // Hide dropdown selector for everyone except super_admin
                 if (currentUser && currentUser.role !== 'super_admin') {
                     document.getElementById('checkinEmpSelectField').style.display = 'none';
+                    document.getElementById('verificationProjectField').style.display = 'none';
                 } else {
                     document.getElementById('checkinEmpSelectField').style.display = 'block';
+                    document.getElementById('verificationProjectField').style.display = 'block';
                 }
                 
                 // Request camera permission to verify access
