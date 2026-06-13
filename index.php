@@ -1111,8 +1111,8 @@ $logged_in = !empty($_SESSION['user_id']);
             <button class="menu-toggle" onclick="toggleSidebar()">
                 <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width: 24px; height: 24px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
             </button>
-            <div class="mobile-brand" style="background: #fff; width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 5px rgba(0,0,0,0.05); overflow: hidden; border: 1px solid var(--line);">
-                <img src="logo.png" alt="Signature Properties Logo" style="width: 100%; height: 100%; object-fit: cover; transform: scale(1.02);">
+            <div class="mobile-brand" style="background: #fff; padding: 4px 10px; border-radius: 8px; display: flex; align-items: center; max-height: 40px; box-shadow: 0 2px 5px rgba(0,0,0,0.05);">
+                <img src="logo.png" alt="Signature Properties Logo" style="max-height: 30px; width: auto; object-fit: contain;">
             </div>
             <div style="width: 24px;"></div>
         </div>
@@ -1122,10 +1122,8 @@ $logged_in = !empty($_SESSION['user_id']);
         
         <!-- SIDEBAR -->
         <aside class="sidebar">
-            <div class="brand" style="margin-bottom: 28px; display: flex; justify-content: center;">
-                <div style="background: #fff; width: 96px; height: 96px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 4px 15px rgba(0,0,0,0.12); overflow: hidden; border: 1.5px solid var(--line);">
-                    <img src="logo.png" alt="Signature Properties Logo" style="width: 100%; height: 100%; object-fit: cover; transform: scale(1.02);">
-                </div>
+            <div class="brand" style="background: #fff; padding: 12px; border-radius: 12px; margin-bottom: 24px; display: flex; justify-content: center; align-items: center; box-shadow: 0 4px 12px rgba(0,0,0,0.08);">
+                <img src="logo.png" alt="Signature Properties Logo" style="max-height: 52px; width: auto; object-fit: contain;">
             </div>
             
             <div class="nav-label">HR OPERATION</div>
