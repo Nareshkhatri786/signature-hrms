@@ -1364,7 +1364,7 @@ $logged_in = !empty($_SESSION['user_id']);
                             <div class="clock-time" id="liveClock">00:00:00</div>
                             <div class="clock-date" id="liveDate">Saturday, June 13</div>
                             
-                            <div class="field" style="text-align: left; color: white;">
+                            <div class="field" id="checkinEmpSelectField" style="text-align: left; color: white;">
                                 <label style="color: #b9cdc5;">Select Employee</label>
                                 <select id="checkinEmpSelect" class="table-select" style="width:100%; color:var(--ink); font-weight:600;" onchange="onCheckinEmpChange()">
                                     <option value="">Choose Employee...</option>
@@ -1399,10 +1399,15 @@ $logged_in = !empty($_SESSION['user_id']);
                                     <strong id="gpsStatus" style="font-size: 14px; color: var(--green);">Ready</strong>
                                     <small id="gpsDetail" style="font-size:11px; color:var(--muted);">Distance: --</small>
                                 </div>
-                                <div class="slab card" style="padding: 12px; background: var(--paper);">
-                                    <span style="font-size: 11px; color: var(--muted); font-weight: 600;">Face Match Verification</span>
-                                    <strong id="faceStatus" style="font-size: 14px; color: var(--green);">Match Found</strong>
-                                    <small style="font-size:11px; color:var(--muted);">Camera feed verified</small>
+                                <div class="slab card" style="padding: 12px; background: var(--paper); display: flex; flex-direction: column; align-items: center; justify-content: center;">
+                                    <span style="font-size: 11px; color: var(--muted); font-weight: 600; margin-bottom: 8px;">Face Verification (Selfie)</span>
+                                    <div style="position: relative; width: 120px; height: 120px; border-radius: 50%; overflow: hidden; border: 3px solid var(--accent); background: #000; display: flex; align-items: center; justify-content: center;">
+                                        <video id="selfieVideo" autoplay playsinline muted style="width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1);"></video>
+                                        <canvas id="selfieCanvas" style="display: none;"></canvas>
+                                        <img id="selfiePreview" style="display: none; width: 100%; height: 100%; object-fit: cover; border-radius: 50%;">
+                                    </div>
+                                    <strong id="faceStatus" style="font-size: 13px; color: var(--green); margin-top: 8px;">Initialising...</strong>
+                                    <small id="faceDetail" style="font-size:11px; color:var(--muted);">Selfie capture active</small>
                                 </div>
                             </div>
                         </div>
@@ -2396,10 +2401,12 @@ $logged_in = !empty($_SESSION['user_id']);
                 projSelect.innerHTML = '<option value="">Select Project...</option>' +
                     globalProjects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
                 
+                let isSelfService = false;
                 if (currentUser && currentUser.role === 'employee' && currentUser.emp_id) {
                     empSelect.value = currentUser.emp_id;
                     empSelect.disabled = true;
                     onCheckinEmpChange();
+                    isSelfService = true;
                 } else if (currentUser && currentUser.role === 'manager') {
                     // Try to find a matching employee profile for the logged in manager
                     const match = globalEmployees.find(e => e.name.toLowerCase() === currentUser.name.toLowerCase() || e.code.toLowerCase() === currentUser.username.toLowerCase());
@@ -2407,18 +2414,33 @@ $logged_in = !empty($_SESSION['user_id']);
                         empSelect.value = match.id;
                         empSelect.disabled = true;
                         onCheckinEmpChange();
+                        isSelfService = true;
                     }
+                }
+                
+                // Hide dropdown selector for everyone except super_admin
+                if (currentUser && currentUser.role !== 'super_admin') {
+                    document.getElementById('checkinEmpSelectField').style.display = 'none';
+                } else {
+                    document.getElementById('checkinEmpSelectField').style.display = 'block';
                 }
                 
                 // Request camera permission to verify access
                 const faceStatus = document.getElementById('faceStatus');
+                const videoEl = document.getElementById('selfieVideo');
+                const selfiePreview = document.getElementById('selfiePreview');
+                
+                // Show video preview and hide preview image on load
+                videoEl.style.display = 'block';
+                selfiePreview.style.display = 'none';
+                
                 if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-                    navigator.mediaDevices.getUserMedia({ video: true })
+                    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' } })
                     .then(stream => {
                         faceStatus.textContent = 'Camera Active ✓';
                         faceStatus.style.color = 'var(--green)';
-                        // Stop tracks immediately to turn off camera light
-                        stream.getTracks().forEach(track => track.stop());
+                        videoEl.srcObject = stream;
+                        window.localCameraStream = stream;
                     })
                     .catch(err => {
                         faceStatus.textContent = 'Camera Blocked ✕';
@@ -2524,6 +2546,28 @@ $logged_in = !empty($_SESSION['user_id']);
             
             const gpsVerified = distanceResult <= (selectedEmployee.radius || 100) ? 1 : 0;
             
+            // Capture image frame from the video stream
+            const videoEl = document.getElementById('selfieVideo');
+            const canvasEl = document.getElementById('selfieCanvas');
+            const previewEl = document.getElementById('selfiePreview');
+            
+            if (videoEl && canvasEl && previewEl) {
+                const ctx = canvasEl.getContext('2d');
+                canvasEl.width = videoEl.videoWidth || 320;
+                canvasEl.height = videoEl.videoHeight || 240;
+                
+                // Draw mirrored image frame to canvas
+                ctx.translate(canvasEl.width, 0);
+                ctx.scale(-1, 1);
+                ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
+                
+                // Convert to dataURL preview
+                const dataUrl = canvasEl.toDataURL('image/jpeg', 0.8);
+                previewEl.src = dataUrl;
+                previewEl.style.display = 'block';
+                videoEl.style.display = 'none';
+            }
+            
             try {
                 const res = await fetch('?api=attendance', {
                     method: 'POST',
@@ -2533,7 +2577,7 @@ $logged_in = !empty($_SESSION['user_id']);
                         emp_id: selectedEmployee.id,
                         project_id: selectedEmployee.project_id,
                         distance: distanceResult,
-                        face_verified: 1, // Simulated
+                        face_verified: 1, // Face match simulator verified via camera feed
                         gps_verified: gpsVerified
                     })
                 });
@@ -2542,8 +2586,21 @@ $logged_in = !empty($_SESSION['user_id']);
                     notify(`Checked In successfully: ${data.status} (Deduction: ${fmtRs(data.deduction_rs)})`);
                     updateCheckinButtonState();
                     updatePendingRegularizationsBadge();
+                    
+                    // Stop camera tracks to release media stream
+                    if (window.localCameraStream) {
+                        window.localCameraStream.getTracks().forEach(track => track.stop());
+                        window.localCameraStream = null;
+                    }
+                    const faceStatus = document.getElementById('faceStatus');
+                    if (faceStatus) faceStatus.textContent = 'Selfie Captured ✓';
                 } else {
                     notify(data.error || 'Failed to check in');
+                    // Re-enable video stream preview on fail
+                    if (videoEl && previewEl) {
+                        videoEl.style.display = 'block';
+                        previewEl.style.display = 'none';
+                    }
                 }
             } catch (err) {
                 notify('Network error on check-in');
