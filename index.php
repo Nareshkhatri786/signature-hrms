@@ -2409,6 +2409,22 @@ $logged_in = !empty($_SESSION['user_id']);
                         onCheckinEmpChange();
                     }
                 }
+                
+                // Request camera permission to verify access
+                const faceStatus = document.getElementById('faceStatus');
+                if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                    navigator.mediaDevices.getUserMedia({ video: true })
+                    .then(stream => {
+                        faceStatus.textContent = 'Camera Active ✓';
+                        faceStatus.style.color = 'var(--green)';
+                        // Stop tracks immediately to turn off camera light
+                        stream.getTracks().forEach(track => track.stop());
+                    })
+                    .catch(err => {
+                        faceStatus.textContent = 'Camera Blocked ✕';
+                        faceStatus.style.color = 'var(--red)';
+                    });
+                }
             } catch (err) {}
         }
 
