@@ -30,6 +30,23 @@ try {
     try {
         $pdo->exec("UPDATE employees SET password = '" . password_hash('Signature@2026', PASSWORD_BCRYPT) . "' WHERE password IS NULL OR password = ''");
     } catch (PDOException $ex) { /* column may not exist yet, ignore */ }
+    // Auto-migrate: add selfie_path column to attendance
+    try {
+        $pdo->query("SELECT selfie_path FROM attendance LIMIT 1");
+    } catch (PDOException $ex) {
+        $pdo->exec("ALTER TABLE attendance ADD COLUMN selfie_path VARCHAR(255) NULL");
+    }
+    // Auto-migrate: add checkout_selfie_path column to attendance
+    try {
+        $pdo->query("SELECT checkout_selfie_path FROM attendance LIMIT 1");
+    } catch (PDOException $ex) {
+        $pdo->exec("ALTER TABLE attendance ADD COLUMN checkout_selfie_path VARCHAR(255) NULL");
+    }
+    // Ensure uploads/selfies directory exists
+    $selfie_dir = __DIR__ . '/uploads/selfies';
+    if (!is_dir($selfie_dir)) {
+        mkdir($selfie_dir, 0755, true);
+    }
 } catch (PDOException $e) {
     $db_error = "Could not connect to the database. Make sure setup.php has been run and details are correct. Error: " . $e->getMessage();
 }
@@ -472,15 +489,27 @@ if (isset($_GET['api'])) {
                             }
                         }
                         
+                        // Save selfie photo if provided
+                        $selfie_path = null;
+                        if (!empty($data['selfie_b64'])) {
+                            $b64 = preg_replace('/^data:image\/\w+;base64,/', '', $data['selfie_b64']);
+                            $img_data = base64_decode($b64);
+                            if ($img_data) {
+                                $fname = 'uploads/selfies/' . $emp_id . '_' . $attendance_date . '_in.jpg';
+                                file_put_contents(__DIR__ . '/' . $fname, $img_data);
+                                $selfie_path = $fname;
+                            }
+                        }
+                        
                         // Save Attendance
                         $stmt_save = $pdo->prepare("INSERT INTO attendance 
-                            (emp_id, project_id, attendance_date, check_in_time, distance_metres, face_verified, gps_verified, status, late_minutes, deduction_rs, grace_used) 
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            ON DUPLICATE KEY UPDATE check_in_time = ?, distance_metres = ?, face_verified = ?, gps_verified = ?, status = ?, late_minutes = ?, deduction_rs = ?, grace_used = ?");
+                            (emp_id, project_id, attendance_date, check_in_time, distance_metres, face_verified, gps_verified, status, late_minutes, deduction_rs, grace_used, selfie_path) 
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ON DUPLICATE KEY UPDATE check_in_time = ?, distance_metres = ?, face_verified = ?, gps_verified = ?, status = ?, late_minutes = ?, deduction_rs = ?, grace_used = ?, selfie_path = COALESCE(?, selfie_path)");
                         
                         $stmt_save->execute([
-                            $emp_id, $project_id, $attendance_date, $check_in_time, $distance, $face_verified, $gps_verified, $status, $late_minutes, $deduction, $grace_used,
-                            $check_in_time, $distance, $face_verified, $gps_verified, $status, $late_minutes, $deduction, $grace_used
+                            $emp_id, $project_id, $attendance_date, $check_in_time, $distance, $face_verified, $gps_verified, $status, $late_minutes, $deduction, $grace_used, $selfie_path,
+                            $check_in_time, $distance, $face_verified, $gps_verified, $status, $late_minutes, $deduction, $grace_used, $selfie_path
                         ]);
                         
                         // Activity Log
@@ -493,6 +522,7 @@ if (isset($_GET['api'])) {
                             'late_minutes' => $late_minutes,
                             'deduction_rs' => $deduction
                         ]);
+
                         
                     } elseif ($action === 'checkout') {
                         $att_id = (int)$data['att_id'];
@@ -538,10 +568,25 @@ if (isset($_GET['api'])) {
                             $deduction += round($per_min * $early_departure_mins, 2);
                         }
                         
+                        // Save checkout selfie if provided
+                        if (!empty($data['selfie_b64'])) {
+                            $b64co = preg_replace('/^data:image\/\w+;base64,/', '', $data['selfie_b64']);
+                            $img_co = base64_decode($b64co);
+                            if ($img_co) {
+                                $attendance_date_co = date('Y-m-d');
+                                $emp_id_co = $att['emp_id'];
+                                $fname_co = 'uploads/selfies/' . $emp_id_co . '_' . $attendance_date_co . '_out.jpg';
+                                file_put_contents(__DIR__ . '/' . $fname_co, $img_co);
+                                $stmt_co_img = $pdo->prepare("UPDATE attendance SET checkout_selfie_path = ? WHERE id = ?");
+                                $stmt_co_img->execute([$fname_co, $att_id]);
+                            }
+                        }
+                        
                         $stmt_save = $pdo->prepare("UPDATE attendance SET check_out_time = ?, working_minutes = ?, early_departure_mins = ?, deduction_rs = ? WHERE id = ?");
                         $stmt_save->execute([$check_out_time, $net_working_minutes, $early_departure_mins, $deduction, $att_id]);
                         
                         echo json_encode(['success' => true]);
+
                     } elseif ($action === 'mark_absent') {
                         if ($is_emp) {
                             http_response_code(403);
@@ -1576,12 +1621,42 @@ $logged_in = !empty($_SESSION['user_id']);
                 
                 <!-- Tab 2: Daily Register -->
                 <div id="attTab-register" class="att-tab-content" style="display: none;">
+
+                    <!-- Employee Monthly Summary Card (shown for employee role) -->
+                    <div id="empMonthlySummary" style="display:none; margin-bottom:20px;">
+                        <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin-bottom:16px;">
+                            <div class="card stat-card green" style="padding:16px;">
+                                <span>Present Days</span>
+                                <strong id="sumPresent">0</strong>
+                                <small>This month</small>
+                            </div>
+                            <div class="card stat-card orange" style="padding:16px;">
+                                <span>Late Days</span>
+                                <strong id="sumLate">0</strong>
+                                <small>Including Major Late</small>
+                            </div>
+                            <div class="card stat-card red" style="padding:16px;">
+                                <span>Absent Days</span>
+                                <strong id="sumAbsent">0</strong>
+                                <small>No check-in</small>
+                            </div>
+                            <div class="card stat-card blue" style="padding:16px;">
+                                <span>Total Deduction</span>
+                                <strong id="sumDeduction" style="font-size:18px;">₹0</strong>
+                                <small>This month</small>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="card table-card">
                         <div class="table-header">
-                            <h2>Attendance Records</h2>
+                            <h2 id="registerHeading">Attendance Records</h2>
                             <div class="table-filters">
-                                <input type="date" id="registerDateFilter" class="table-select" onchange="loadDailyRegister()">
-                                <select id="registerStatusFilter" class="table-select" onchange="loadDailyRegister()">
+                                <!-- Date picker for admin/manager -->
+                                <input type="date" id="registerDateFilter" class="table-select" onchange="loadDailyRegister()" style="display:none;">
+                                <!-- Month picker for employee -->
+                                <input type="month" id="registerMonthFilter" class="table-select" onchange="loadMonthlyRegister()" style="display:none;">
+                                <select id="registerStatusFilter" class="table-select" onchange="loadRegisterAuto()">
                                     <option value="">All Statuses</option>
                                     <option value="On Time">On Time</option>
                                     <option value="Late">Late</option>
@@ -1596,16 +1671,16 @@ $logged_in = !empty($_SESSION['user_id']);
                         <div class="table-wrap">
                             <table>
                                 <thead>
-                                    <tr>
+                                    <tr id="registerTableHead">
+                                        <th>Date</th>
                                         <th>Employee</th>
-                                        <th>Role</th>
-                                        <th>Project</th>
                                         <th>Check-In</th>
                                         <th>Check-Out</th>
-                                        <th>Working Mins</th>
+                                        <th>Working Hrs</th>
                                         <th>Status</th>
                                         <th>Deduction</th>
                                         <th>GPS/Face</th>
+                                        <th>📷 Photo</th>
                                         <th>Actions</th>
                                     </tr>
                                 </thead>
@@ -2201,6 +2276,33 @@ $logged_in = !empty($_SESSION['user_id']);
         </div>
     </div>
 
+    <!-- ── MODAL: SELFIE VIEW ── -->
+    <div id="selfieViewModal" class="modal-overlay">
+        <div class="modal-card" style="max-width:560px;">
+            <div class="modal-header">
+                <h3>📷 Attendance Selfie</h3>
+                <button type="button" class="close-btn" onclick="closeModal('selfieViewModal')">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div style="display:flex; gap:24px; justify-content:center; flex-wrap:wrap;">
+                    <div style="text-align:center;">
+                        <p style="font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; margin-bottom:8px;">Check-In Photo</p>
+                        <img id="selfieViewIn" src="" style="width:200px; height:200px; border-radius:16px; object-fit:cover; border:3px solid var(--lime); box-shadow:0 8px 30px rgba(0,0,0,.2);">
+                    </div>
+                    <div id="selfieViewOutWrap" style="text-align:center; display:none;">
+                        <p style="font-size:12px; font-weight:700; color:var(--muted); text-transform:uppercase; margin-bottom:8px;">Check-Out Photo</p>
+                        <img id="selfieViewOut" src="" style="width:200px; height:200px; border-radius:16px; object-fit:cover; border:3px solid var(--orange); box-shadow:0 8px 30px rgba(0,0,0,.2);">
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn sec" onclick="closeModal('selfieViewModal')">Close</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ── MODAL: REGULARIZATION REQUEST SUBMIT ── -->
     <div id="regularizeSubmitModal" class="modal-overlay">
         <div class="modal-card" style="max-width: 420px;">
@@ -2547,8 +2649,26 @@ $logged_in = !empty($_SESSION['user_id']);
             document.getElementById('tabBtn-' + tab).classList.add('active');
             
             if (tab === 'register') {
-                document.getElementById('registerDateFilter').value = new Date().toISOString().split('T')[0];
-                loadDailyRegister();
+                const isEmp = currentUser && currentUser.role === 'employee';
+                if (isEmp) {
+                    // Employee: show month picker, monthly register
+                    document.getElementById('registerMonthFilter').style.display = 'block';
+                    document.getElementById('registerDateFilter').style.display = 'none';
+                    document.getElementById('empMonthlySummary').style.display = 'block';
+                    document.getElementById('registerHeading').textContent = 'My Monthly Attendance';
+                    if (!document.getElementById('registerMonthFilter').value) {
+                        document.getElementById('registerMonthFilter').value = new Date().toISOString().substring(0, 7);
+                    }
+                    loadMonthlyRegister();
+                } else {
+                    // Admin/Manager: show date picker, daily register
+                    document.getElementById('registerDateFilter').style.display = 'block';
+                    document.getElementById('registerMonthFilter').style.display = 'none';
+                    document.getElementById('empMonthlySummary').style.display = 'none';
+                    document.getElementById('registerHeading').textContent = 'Attendance Records';
+                    document.getElementById('registerDateFilter').value = new Date().toISOString().split('T')[0];
+                    loadDailyRegister();
+                }
             } else if (tab === 'regularization') {
                 loadPendingRegularizations();
             }
@@ -2818,6 +2938,7 @@ $logged_in = !empty($_SESSION['user_id']);
             const canvasEl = document.getElementById(isEmpMode ? 'selfieCanvas' : 'selfieCanvasAdmin');
             const previewEl = document.getElementById(isEmpMode ? 'selfiePreview' : 'selfiePreviewAdmin');
             
+            let selfieB64 = null;
             if (videoEl && canvasEl && previewEl) {
                 const ctx = canvasEl.getContext('2d');
                 canvasEl.width = videoEl.videoWidth || 320;
@@ -2825,8 +2946,8 @@ $logged_in = !empty($_SESSION['user_id']);
                 ctx.translate(canvasEl.width, 0);
                 ctx.scale(-1, 1);
                 ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
-                const dataUrl = canvasEl.toDataURL('image/jpeg', 0.8);
-                previewEl.src = dataUrl;
+                selfieB64 = canvasEl.toDataURL('image/jpeg', 0.8);
+                previewEl.src = selfieB64;
                 previewEl.style.display = 'block';
                 videoEl.style.display = 'none';
             }
@@ -2841,7 +2962,8 @@ $logged_in = !empty($_SESSION['user_id']);
                         project_id: selectedEmployee.project_id,
                         distance: distanceResult,
                         face_verified: 1,
-                        gps_verified: gpsVerified
+                        gps_verified: gpsVerified,
+                        selfie_b64: selfieB64
                     })
                 });
                 const data = await res.json();
@@ -2876,19 +2998,41 @@ $logged_in = !empty($_SESSION['user_id']);
         async function processCheckout() {
             if (!todayEmpRecord) return;
             
+            const isEmpMode = currentUser && currentUser.role === 'employee';
+            const videoEl = document.getElementById(isEmpMode ? 'selfieVideo' : 'selfieVideoAdmin');
+            const canvasEl = document.getElementById(isEmpMode ? 'selfieCanvas' : 'selfieCanvasAdmin');
+            
+            // Capture checkout selfie from camera (restart if needed)
+            let selfieB64 = null;
+            if (videoEl && canvasEl) {
+                // If camera was stopped, try to use last preview
+                const previewEl = document.getElementById(isEmpMode ? 'selfiePreview' : 'selfiePreviewAdmin');
+                if (previewEl && previewEl.src && previewEl.src.startsWith('data:')) {
+                    selfieB64 = previewEl.src; // reuse last captured frame
+                } else if (window.localCameraStream) {
+                    const ctx = canvasEl.getContext('2d');
+                    canvasEl.width = videoEl.videoWidth || 320;
+                    canvasEl.height = videoEl.videoHeight || 240;
+                    ctx.translate(canvasEl.width, 0);
+                    ctx.scale(-1, 1);
+                    ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
+                    selfieB64 = canvasEl.toDataURL('image/jpeg', 0.8);
+                }
+            }
+
             try {
                 const res = await fetch('?api=attendance', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         action: 'checkout',
-                        att_id: todayEmpRecord.id
+                        att_id: todayEmpRecord.id,
+                        selfie_b64: selfieB64
                     })
                 });
                 const data = await res.json();
                 if (data.success) {
                     notify('✓ Checked Out Successfully!');
-                    const isEmpMode = currentUser && currentUser.role === 'employee';
                     if (isEmpMode) {
                         updateEmpCheckinButtonState();
                     } else {
@@ -2924,6 +3068,78 @@ $logged_in = !empty($_SESSION['user_id']);
             });
         }
 
+        // Called when either filter is changed - routes to correct loader
+        function loadRegisterAuto() {
+            const isEmp = currentUser && currentUser.role === 'employee';
+            if (isEmp) loadMonthlyRegister(); else loadDailyRegister();
+        }
+
+        // Monthly register for employees
+        async function loadMonthlyRegister() {
+            const month = document.getElementById('registerMonthFilter').value || new Date().toISOString().substring(0, 7);
+            const status = document.getElementById('registerStatusFilter').value;
+            try {
+                const res = await fetch(`?api=attendance/register&month=${month}`);
+                const list = await res.json();
+
+                // Filter by status if needed
+                const filtered = status ? list.filter(a => a.status === status) : list;
+
+                // Compute summary
+                const present = filtered.filter(a => !['Absent'].includes(a.status)).length;
+                const late = filtered.filter(a => ['Late','Major Late','Half Day'].includes(a.status)).length;
+                const absent = filtered.filter(a => a.status === 'Absent').length;
+                const deduction = filtered.reduce((sum, a) => sum + parseFloat(a.deduction_rs || 0), 0);
+                document.getElementById('sumPresent').textContent = present;
+                document.getElementById('sumLate').textContent = late;
+                document.getElementById('sumAbsent').textContent = absent;
+                document.getElementById('sumDeduction').textContent = fmtRs(deduction);
+
+                const body = document.getElementById('attendanceRegisterBody');
+                if (filtered.length === 0) {
+                    body.innerHTML = '<tr><td colspan="10"><div class="empty-state">No attendance records for this month.</div></td></tr>';
+                    return;
+                }
+
+                body.innerHTML = filtered.map(a => {
+                    const statusClass = a.status.toLowerCase().replace(' ', '');
+                    const dateStr = new Date(a.attendance_date).toLocaleDateString('en-IN', {day:'2-digit', month:'short', weekday:'short'});
+                    const wrkHrs = a.working_minutes ? `${Math.floor(a.working_minutes/60)}h ${a.working_minutes%60}m` : '—';
+                    
+                    let regularizeBtn = '';
+                    if (a.status !== 'On Time' && a.status !== 'Absent') {
+                        if (a.regularization_status === 'none' || !a.regularization_status) {
+                            regularizeBtn = `<button class="action-btn" onclick="openRegularizeSubmitModal(${a.id})">Regularize</button>`;
+                        } else if (a.regularization_status === 'pending') {
+                            regularizeBtn = `<span style="font-size:11px;color:var(--orange);font-weight:700;">Pending</span>`;
+                        } else if (a.regularization_status === 'approved') {
+                            regularizeBtn = `<span style="font-size:11px;color:var(--green);font-weight:700;">✓ Approved</span>`;
+                        } else if (a.regularization_status === 'rejected') {
+                            regularizeBtn = `<span style="font-size:11px;color:var(--red);font-weight:700;">✕ Rejected</span>`;
+                        }
+                    }
+
+                    const selfieHtml = a.selfie_path
+                        ? `<img src="${a.selfie_path}" onclick="openSelfieModal('${a.selfie_path}','${a.checkout_selfie_path||''}')" style="width:36px;height:36px;border-radius:50%;object-fit:cover;cursor:pointer;border:2px solid var(--lime);" title="Click to view">` 
+                        : '<span style="font-size:11px;color:var(--muted);">No photo</span>';
+
+                    return `
+                        <tr class="status-${statusClass}">
+                            <td><strong>${dateStr}</strong></td>
+                            <td><strong>${a.employee_name}</strong></td>
+                            <td>${a.check_in_time || '—'}</td>
+                            <td>${a.check_out_time || '—'}</td>
+                            <td>${wrkHrs}</td>
+                            <td><span class="status ${a.status === 'On Time' ? '' : 'warning'}">${a.status}</span></td>
+                            <td>${fmtRs(a.deduction_rs)}</td>
+                            <td style="font-size:11px;">${a.gps_verified=='1'?'GPS✓':'GPS✕'} / ${a.face_verified=='1'?'Face✓':'Face✕'}</td>
+                            <td>${selfieHtml}</td>
+                            <td>${regularizeBtn}</td>
+                        </tr>`;
+                }).join('');
+            } catch (err) { console.error(err); }
+        }
+
         async function loadDailyRegister() {
             const date = document.getElementById('registerDateFilter').value;
             const status = document.getElementById('registerStatusFilter').value;
@@ -2938,38 +3154,60 @@ $logged_in = !empty($_SESSION['user_id']);
                     return;
                 }
                 
-                body.innerHTML = list.map((a, idx) => {
+                body.innerHTML = list.map((a) => {
                     const statusClass = a.status.toLowerCase().replace(' ', '');
+                    const wrkHrs = a.working_minutes ? `${Math.floor(a.working_minutes/60)}h ${a.working_minutes%60}m` : '—';
+                    const dateStr = new Date(a.attendance_date).toLocaleDateString('en-IN', {day:'2-digit', month:'short', weekday:'short'});
                     
                     let regularizeBtn = '';
                     if (a.status !== 'On Time' && a.status !== 'Absent') {
-                        if (a.regularization_status === 'none') {
+                        if (a.regularization_status === 'none' || !a.regularization_status) {
                             regularizeBtn = `<button class="action-btn" onclick="openRegularizeSubmitModal(${a.id})">Regularize</button>`;
                         } else if (a.regularization_status === 'pending') {
                             regularizeBtn = `<span style="font-size:11px; color:var(--orange); font-weight:700;">Pending approval</span>`;
                         } else if (a.regularization_status === 'approved') {
-                            regularizeBtn = `<span style="font-size:11px; color:var(--green); font-weight:700;">Approved (Remark: ${a.manager_remark || 'none'})</span>`;
+                            regularizeBtn = `<span style="font-size:11px; color:var(--green); font-weight:700;">Approved (${a.manager_remark || ''})</span>`;
                         } else if (a.regularization_status === 'rejected') {
                             regularizeBtn = `<span style="font-size:11px; color:var(--red); font-weight:700;">Rejected (${a.manager_remark || ''})</span>`;
                         }
                     }
+
+                    const selfieHtml = a.selfie_path
+                        ? `<img src="${a.selfie_path}" onclick="openSelfieModal('${a.selfie_path}','${a.checkout_selfie_path||''}')" style="width:36px;height:36px;border-radius:50%;object-fit:cover;cursor:pointer;border:2px solid var(--lime);" title="Click to view">` 
+                        : '<span style="font-size:11px;color:var(--muted);">No photo</span>';
                     
                     return `
                         <tr class="status-${statusClass}">
-                            <td><strong>${a.employee_name}</strong></td>
-                            <td>${a.employee_role}</td>
-                            <td>${a.project_name || '—'}</td>
+                            <td><strong>${dateStr}</strong></td>
+                            <td><strong>${a.employee_name}</strong><br><small style="color:var(--muted);">${a.employee_role}</small></td>
                             <td>${a.check_in_time || '—'}</td>
                             <td>${a.check_out_time || '—'}</td>
-                            <td>${a.working_minutes || '0'} mins</td>
+                            <td>${wrkHrs}</td>
                             <td><span class="status ${a.status === 'On Time' ? '' : 'warning'}">${a.status}</span></td>
                             <td>${fmtRs(a.deduction_rs)}</td>
-                            <td>${a.gps_verified == '1' ? 'GPS✓' : 'GPS✕'} / ${a.face_verified == '1' ? 'Face✓' : 'Face✕'}</td>
+                            <td style="font-size:11px;">${a.gps_verified == '1' ? 'GPS✓' : 'GPS✕'} / ${a.face_verified == '1' ? 'Face✓' : 'Face✕'}</td>
+                            <td>${selfieHtml}</td>
                             <td>${regularizeBtn}</td>
                         </tr>
                     `;
                 }).join('');
             } catch (err) {}
+        }
+
+        // Selfie photo enlarge modal
+        function openSelfieModal(inPath, outPath) {
+            const modal = document.getElementById('selfieViewModal');
+            const inImg = document.getElementById('selfieViewIn');
+            const outImg = document.getElementById('selfieViewOut');
+            const outWrap = document.getElementById('selfieViewOutWrap');
+            inImg.src = inPath;
+            if (outPath) {
+                outImg.src = outPath;
+                outWrap.style.display = 'block';
+            } else {
+                outWrap.style.display = 'none';
+            }
+            openModal('selfieViewModal');
         }
 
         function openRegularizeSubmitModal(attId) {
