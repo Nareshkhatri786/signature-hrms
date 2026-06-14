@@ -185,7 +185,6 @@ if (isset($_GET['api'])) {
                 $total_projects = (int) $pdo->query($proj_sql)->fetchColumn();
                 
                 // Today Stats
-                $today = date('Y-MM-DD');
                 $att_sql = "SELECT a.*, e.name as emp_name FROM attendance a 
                             JOIN employees e ON a.emp_id = e.id 
                             WHERE a.attendance_date = CURRENT_DATE()";
@@ -757,12 +756,14 @@ if (isset($_GET['api'])) {
                     $config = json_decode($e['incentive_config'] ?? '{}', true);
                     if ($e['role'] === 'Telecaller') {
                         $incentive = (float) ($config['visitFixed'] ?? 0.0);
-                    } elseif ($e['role'] === 'Asst. Sales Manager' || $e['role'] === 'Sales Manager') {
+                    } elseif ($e['role'] === 'Sales Executive') {
+                        $incentive = (float) ($config['salesFixed'] ?? 0.0);
+                    } elseif ($e['role'] === 'Asst. Sales Manager') {
+                        $incentive = (float) ($config['salesFixed'] ?? 0.0) + (float) ($config['visitFixed'] ?? 0.0);
+                    } elseif ($e['role'] === 'Sales Manager') {
                         $incentive = (float) ($config['salesFixed'] ?? 0.0) + (float) ($config['visitFixed'] ?? 0.0);
                     } elseif ($e['role'] === 'Sr. Sales Manager') {
                         $incentive = (float) ($config['onAccount'] ?? 0.0);
-                    } elseif ($e['role'] === 'Manager') {
-                        $incentive = (float) ($config['salesFixed'] ?? 0.0);
                     }
                     
                     $salary = (float) $e['salary'];
@@ -2017,10 +2018,10 @@ $logged_in = !empty($_SESSION['user_id']);
                             <label>Designation/Role</label>
                             <select id="empRole" onchange="onEmpRoleChange()" required>
                                 <option value="Telecaller">Telecaller</option>
+                                <option value="Sales Executive">Sales Executive</option>
                                 <option value="Asst. Sales Manager">Asst. Sales Manager</option>
                                 <option value="Sales Manager">Sales Manager</option>
                                 <option value="Sr. Sales Manager">Sr. Sales Manager</option>
-                                <option value="Manager">Manager</option>
                             </select>
                         </div>
                         <div class="field">
@@ -2038,7 +2039,7 @@ $logged_in = !empty($_SESSION['user_id']);
                         </div>
                         <div class="field">
                             <label>Petrol Allowance (₹)</label>
-                            <input type="number" id="empPetrol" default="0">
+                            <input type="number" id="empPetrol" value="0" min="0">
                         </div>
                     </div>
                     
@@ -2643,7 +2644,7 @@ $logged_in = !empty($_SESSION['user_id']);
         // ==========================================
         function switchAttTab(tab) {
             document.querySelectorAll('.att-tab-content').forEach(c => c.style.display = 'none');
-            document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('#attTabs button').forEach(b => b.classList.remove('active'));
             
             document.getElementById('attTab-' + tab).style.display = 'block';
             document.getElementById('tabBtn-' + tab).classList.add('active');
@@ -2930,7 +2931,10 @@ $logged_in = !empty($_SESSION['user_id']);
         async function processCheckin() {
             if (!selectedEmployee) return;
             
-            const gpsVerified = distanceResult <= (selectedEmployee.radius || 100) ? 1 : 0;
+            // Use actual project radius for GPS verification
+            const empProject = globalProjects.find(p => p.id == selectedEmployee.project_id);
+            const projectRadius = empProject ? parseInt(empProject.radius) : 100;
+            const gpsVerified = distanceResult <= projectRadius ? 1 : 0;
             
             const isEmpMode = currentUser && currentUser.role === 'employee';
             // Pick the right video/canvas/preview elements
@@ -3234,7 +3238,12 @@ $logged_in = !empty($_SESSION['user_id']);
                 if (data.success) {
                     notify('Regularization request submitted.');
                     closeModal('regularizeSubmitModal');
-                    loadDailyRegister();
+                    // Reload correct register based on role
+                    if (currentUser && currentUser.role === 'employee') {
+                        loadMonthlyRegister();
+                    } else {
+                        loadDailyRegister();
+                    }
                     updatePendingRegularizationsBadge();
                 }
             } catch (err) {}
@@ -3300,20 +3309,32 @@ $logged_in = !empty($_SESSION['user_id']);
         }
 
         async function exportRegisterCSV() {
-            const date = document.getElementById('registerDateFilter').value;
+            const isEmp = currentUser && currentUser.role === 'employee';
             try {
-                const res = await fetch(`?api=attendance&date=${date}`);
-                const list = await res.json();
+                let list, filename;
+                if (isEmp) {
+                    // Employee: export monthly attendance
+                    const month = document.getElementById('registerMonthFilter').value || new Date().toISOString().substring(0, 7);
+                    const res = await fetch(`?api=attendance/register&month=${month}`);
+                    list = await res.json();
+                    filename = `Signature_HRMS_My_Attendance_${month}.csv`;
+                } else {
+                    // Admin/Manager: export daily attendance
+                    const date = document.getElementById('registerDateFilter').value;
+                    const res = await fetch(`?api=attendance&date=${date}`);
+                    list = await res.json();
+                    filename = `Signature_HRMS_Attendance_${date}.csv`;
+                }
                 
-                let csv = 'Employee,Role,Project,Check In,Check Out,Working Mins,Status,Deductions,GPS/Face Verified\n';
+                let csv = 'Date,Employee,Role,Project,Check In,Check Out,Working Mins,Status,Deductions,GPS/Face Verified\n';
                 list.forEach(a => {
-                    csv += `"${a.employee_name}","${a.employee_role}","${a.project_name || ''}","${a.check_in_time || ''}","${a.check_out_time || ''}",${a.working_minutes},"${a.status}",${a.deduction_rs},"${a.gps_verified == '1' ? 'YES' : 'NO'}/${a.face_verified == '1' ? 'YES' : 'NO'}"\n`;
+                    csv += `"${a.attendance_date}","${a.employee_name}","${a.employee_role}","${a.project_name || ''}","${a.check_in_time || ''}","${a.check_out_time || ''}",${a.working_minutes || 0},"${a.status}",${a.deduction_rs},"${a.gps_verified == '1' ? 'YES' : 'NO'}/${a.face_verified == '1' ? 'YES' : 'NO'}"\n`;
                 });
                 
                 const blob = new Blob([csv], { type: 'text/csv' });
                 const link = document.createElement('a');
                 link.href = URL.createObjectURL(blob);
-                link.download = `Signature_HRMS_Attendance_${date}.csv`;
+                link.download = filename;
                 link.click();
             } catch (err) {}
         }
@@ -3437,6 +3458,9 @@ $logged_in = !empty($_SESSION['user_id']);
             
             if (role === 'Telecaller') {
                 document.getElementById('incVisitSection').classList.add('visible');
+            } else if (role === 'Sales Executive') {
+                document.getElementById('incSalesSection').classList.add('visible');
+                document.getElementById('incSalesFixedLabel').textContent = 'Incentive per Sale (₹)';
             } else if (role === 'Asst. Sales Manager') {
                 document.getElementById('incVisitSection').classList.add('visible');
                 document.getElementById('incSalesSection').classList.add('visible');
@@ -3446,9 +3470,6 @@ $logged_in = !empty($_SESSION['user_id']);
                 document.getElementById('incSalesFixedLabel').textContent = 'Incentive per Sale (₹)';
             } else if (role === 'Sr. Sales Manager') {
                 document.getElementById('incSrMgrSection').classList.add('visible');
-            } else if (role === 'Manager') {
-                document.getElementById('incSalesSection').classList.add('visible');
-                document.getElementById('incSalesFixedLabel').textContent = 'Monthly Leadership Incentive (₹)';
             }
         }
 
@@ -3460,11 +3481,13 @@ $logged_in = !empty($_SESSION['user_id']);
             if (role === 'Telecaller') {
                 incConfig.visitFixed = parseFloat(document.getElementById('incVisitFixed').value);
                 incConfig.visitTarget = parseInt(document.getElementById('incVisitTarget').value);
+            } else if (role === 'Sales Executive') {
+                incConfig.salesFixed = parseFloat(document.getElementById('incSalesFixed').value);
             } else if (role === 'Asst. Sales Manager') {
                 incConfig.visitFixed = parseFloat(document.getElementById('incVisitFixed').value);
                 incConfig.visitTarget = parseInt(document.getElementById('incVisitTarget').value);
                 incConfig.salesFixed = parseFloat(document.getElementById('incSalesFixed').value);
-            } else if (role === 'Sales Manager' || role === 'Manager') {
+            } else if (role === 'Sales Manager') {
                 incConfig.salesFixed = parseFloat(document.getElementById('incSalesFixed').value);
             } else if (role === 'Sr. Sales Manager') {
                 incConfig.onAccount = parseFloat(document.getElementById('incOnAccount').value);
@@ -3657,7 +3680,7 @@ $logged_in = !empty($_SESSION['user_id']);
         // ==========================================
         function switchPayrollTab(tab) {
             document.querySelectorAll('.payroll-tab-content').forEach(c => c.style.display = 'none');
-            document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('#view-payroll .tabs button').forEach(b => b.classList.remove('active'));
             
             document.getElementById('payrollTab-' + tab).style.display = 'block';
             document.getElementById('tabBtn-pay' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('active');
