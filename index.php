@@ -26,6 +26,10 @@ try {
         $default_hash = password_hash('Signature@2026', PASSWORD_BCRYPT);
         $pdo->exec("UPDATE employees SET password = '$default_hash' WHERE password IS NULL");
     }
+    // Ensure all employees have a password set (apply default if missing)
+    try {
+        $pdo->exec("UPDATE employees SET password = '" . password_hash('Signature@2026', PASSWORD_BCRYPT) . "' WHERE password IS NULL OR password = ''");
+    } catch (PDOException $ex) { /* column may not exist yet, ignore */ }
 } catch (PDOException $e) {
     $db_error = "Could not connect to the database. Make sure setup.php has been run and details are correct. Error: " . $e->getMessage();
 }
