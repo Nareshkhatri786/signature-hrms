@@ -879,6 +879,67 @@ if (isset($_GET['api'])) {
                 }
                 break;
                 
+            case 'resolve_maps_link':
+                $require_auth();
+                $url = trim($_GET['url'] ?? '');
+                if (empty($url)) {
+                    echo json_encode(['error' => 'No URL provided']);
+                    break;
+                }
+
+                // Use cURL to follow redirects and get the final URL
+                $ch = curl_init();
+                curl_setopt_array($ch, [
+                    CURLOPT_URL            => $url,
+                    CURLOPT_RETURNTRANSFER => true,
+                    CURLOPT_FOLLOWLOCATION => true,
+                    CURLOPT_MAXREDIRS      => 10,
+                    CURLOPT_TIMEOUT        => 10,
+                    CURLOPT_USERAGENT      => 'Mozilla/5.0 (compatible; HRMS/1.0)',
+                    CURLOPT_HEADER         => false,
+                    CURLOPT_NOBODY         => false,
+                ]);
+                $body     = curl_exec($ch);
+                $finalUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                curl_close($ch);
+
+                $lat = null;
+                $lng = null;
+
+                // Pattern 1: /@lat,lng,zoom  (standard Google Maps URL)
+                if (preg_match('/@(-?\d+\.\d+),(-?\d+\.\d+)/', $finalUrl, $m)) {
+                    $lat = (float)$m[1];
+                    $lng = (float)$m[2];
+                }
+                // Pattern 2: !3dlat!4dlng  (place embed URLs)
+                elseif (preg_match('/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/', $finalUrl, $m)) {
+                    $lat = (float)$m[1];
+                    $lng = (float)$m[2];
+                }
+                // Pattern 3: ll=lat,lng  (query param)
+                elseif (preg_match('/[?&]ll=(-?\d+\.\d+),(-?\d+\.\d+)/', $finalUrl, $m)) {
+                    $lat = (float)$m[1];
+                    $lng = (float)$m[2];
+                }
+                // Pattern 4: q=lat,lng
+                elseif (preg_match('/[?&]q=(-?\d+\.\d+),(-?\d+\.\d+)/', $finalUrl, $m)) {
+                    $lat = (float)$m[1];
+                    $lng = (float)$m[2];
+                }
+                // Pattern 5: search in HTML body for og:url meta or canonical
+                elseif ($body && preg_match('/@(-?\d+\.\d+),(-?\d+\.\d+)/', $body, $m)) {
+                    $lat = (float)$m[1];
+                    $lng = (float)$m[2];
+                }
+
+                if ($lat !== null && $lng !== null) {
+                    echo json_encode(['success' => true, 'lat' => $lat, 'lng' => $lng, 'final_url' => $finalUrl]);
+                } else {
+                    echo json_encode(['error' => 'Could not extract coordinates from this link. Please enter lat/lng manually.', 'final_url' => $finalUrl]);
+                }
+                break;
+
             default:
                 http_response_code(404);
                 echo json_encode(['error' => 'API Endpoint Not Found']);
@@ -1206,6 +1267,8 @@ $logged_in = !empty($_SESSION['user_id']);
         .toast { position: fixed; bottom: 30px; right: 30px; background: var(--green); color: #fff; border-radius: 10px; padding: 12px 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.15); transform: translateY(100px); opacity: 0; transition: all .3s cubic-bezier(0.175, 0.885, 0.32, 1.275); z-index: 1000; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
         .toast.show { transform: translateY(0); opacity: 1; }
         .toast svg { width: 18px; stroke-width: 2px; color: var(--lime); }
+
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
         /* ── Incentive configurations inside employee modal ── */
         .inc-section { display: none; padding-top: 14px; border-top: 1px dashed var(--line); margin-top: 14px; }
@@ -2157,14 +2220,35 @@ $logged_in = !empty($_SESSION['user_id']);
                         <textarea id="projAddress" rows="2" style="width:100%; border:1.5px solid var(--line); border-radius:10px; padding:10px;"></textarea>
                     </div>
                     
+                    <!-- Google Maps Link Auto-resolver -->
+                    <div class="field mt-3" id="mapsLinkField">
+                        <label style="display:flex; align-items:center; gap:6px;">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:14px; color:var(--green);"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                            Paste Google Maps Link (Auto-fill Location)
+                        </label>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <input type="text" id="projMapsLink"
+                                placeholder="https://maps.app.goo.gl/... ya Google Maps ka koi bhi link"
+                                style="flex:1; border:1.5px solid var(--line); border-radius:10px; padding:11px 14px; font-size:13px; outline:none; transition:border-color .2s;"
+                                oninput="onMapsLinkInput()"
+                                onfocus="this.style.borderColor='var(--green)'"
+                                onblur="this.style.borderColor='var(--line)'">
+                            <button type="button" id="resolveMapsBtn" onclick="resolveMapsLink()" class="btn" style="white-space:nowrap; padding:11px 16px; font-size:13px;">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:15px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                                Set Location
+                            </button>
+                        </div>
+                        <div id="mapsLinkStatus" style="margin-top:6px; font-size:12px; display:none;"></div>
+                    </div>
+
                     <div class="form-grid mt-3">
                         <div class="field">
                             <label>Latitude Coordinates</label>
-                            <input type="number" id="projLat" step="0.000001" required>
+                            <input type="number" id="projLat" step="0.000001" required placeholder="e.g. 23.022505">
                         </div>
                         <div class="field">
                             <label>Longitude Coordinates</label>
-                            <input type="number" id="projLng" step="0.000001" required>
+                            <input type="number" id="projLng" step="0.000001" required placeholder="e.g. 72.571362">
                         </div>
                     </div>
                     
@@ -3598,14 +3682,13 @@ $logged_in = !empty($_SESSION['user_id']);
             document.getElementById('projId').value = '';
             document.getElementById('projModalTitle').textContent = 'Create Project';
             
-            // Set defaults to office coordinates or current location
-            navigator.geolocation.getCurrentPosition(position => {
-                document.getElementById('projLat').value = position.coords.latitude.toFixed(6);
-                document.getElementById('projLng').value = position.coords.longitude.toFixed(6);
-            }, () => {
-                document.getElementById('projLat').value = "28.613900"; // Delhi
-                document.getElementById('projLng').value = "77.209000";
-            });
+            // Clear maps link field
+            document.getElementById('projMapsLink').value = '';
+            document.getElementById('mapsLinkStatus').style.display = 'none';
+            
+            // Clear lat/lng - let user fill via Maps link or manually
+            document.getElementById('projLat').value = '';
+            document.getElementById('projLng').value = '';
             
             openModal('projectModal');
         }
@@ -3623,8 +3706,61 @@ $logged_in = !empty($_SESSION['user_id']);
             document.getElementById('projShiftStart').value = p.shift_start.substring(0, 5);
             document.getElementById('projShiftEnd').value = p.shift_end.substring(0, 5);
             
+            // Clear maps link field
+            document.getElementById('projMapsLink').value = '';
+            document.getElementById('mapsLinkStatus').style.display = 'none';
+            
             document.getElementById('projModalTitle').textContent = 'Edit Project';
             openModal('projectModal');
+        }
+
+        // ── Google Maps Link Resolver ──
+        function onMapsLinkInput() {
+            const statusEl = document.getElementById('mapsLinkStatus');
+            statusEl.style.display = 'none';
+        }
+
+        async function resolveMapsLink() {
+            const url = document.getElementById('projMapsLink').value.trim();
+            const statusEl = document.getElementById('mapsLinkStatus');
+            const btn = document.getElementById('resolveMapsBtn');
+
+            if (!url) {
+                statusEl.style.display = 'block';
+                statusEl.style.color = 'var(--orange)';
+                statusEl.textContent = '⚠ Pehle Google Maps link paste karein';
+                return;
+            }
+
+            // Show loading
+            btn.disabled = true;
+            btn.innerHTML = `<svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:15px; animation:spin 1s linear infinite;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Resolving...`;
+            statusEl.style.display = 'block';
+            statusEl.style.color = 'var(--muted)';
+            statusEl.textContent = '🔍 Link resolve ho raha hai...';
+
+            try {
+                const res = await fetch('?api=resolve_maps_link&url=' + encodeURIComponent(url));
+                const data = await res.json();
+
+                if (data.success) {
+                    document.getElementById('projLat').value = data.lat.toFixed(6);
+                    document.getElementById('projLng').value = data.lng.toFixed(6);
+
+                    statusEl.style.color = 'var(--green)';
+                    statusEl.innerHTML = `✅ Location set! Lat: <strong>${data.lat.toFixed(6)}</strong>, Lng: <strong>${data.lng.toFixed(6)}</strong> &nbsp;<a href="https://www.google.com/maps?q=${data.lat},${data.lng}" target="_blank" style="color:var(--green); font-weight:700;">Map mein dekho ↗</a>`;
+                    notify('✅ Location automatically set ho gayi!');
+                } else {
+                    statusEl.style.color = 'var(--red)';
+                    statusEl.textContent = '❌ ' + (data.error || 'Coordinates nahi mile. Manually enter karein.');
+                }
+            } catch (err) {
+                statusEl.style.color = 'var(--red)';
+                statusEl.textContent = '❌ Network error. Manually lat/lng enter karein.';
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = `<svg fill="none" stroke="currentColor" viewBox="0 0 24 24" style="width:15px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg> Set Location`;
+            }
         }
 
         async function saveProject(e) {
