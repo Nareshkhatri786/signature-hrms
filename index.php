@@ -30,6 +30,10 @@ try {
     try {
         $pdo->exec("UPDATE employees SET password = '" . password_hash('Signature@2026', PASSWORD_BCRYPT) . "' WHERE password IS NULL OR password = ''");
     } catch (PDOException $ex) { /* column may not exist yet, ignore */ }
+    // Auto-migrate: fix employees.role ENUM to include 'Sales Executive' (remove old 'Manager')
+    try {
+        $pdo->exec("ALTER TABLE employees MODIFY COLUMN role ENUM('Telecaller','Sales Executive','Asst. Sales Manager','Sales Manager','Sr. Sales Manager') NOT NULL");
+    } catch (PDOException $ex) { /* ignore if already correct */ }
     // Auto-migrate: add selfie_path column to attendance
     try {
         $pdo->query("SELECT selfie_path FROM attendance LIMIT 1");

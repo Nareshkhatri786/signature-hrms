@@ -60,7 +60,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['run_setup'])) {
             id INT AUTO_INCREMENT PRIMARY KEY,
             code VARCHAR(20) UNIQUE NOT NULL,
             name VARCHAR(100) NOT NULL,
-            role ENUM('Telecaller','Asst. Sales Manager','Sales Manager','Sr. Sales Manager','Manager') NOT NULL,
+            role ENUM('Telecaller','Sales Executive','Asst. Sales Manager','Sales Manager','Sr. Sales Manager') NOT NULL,
             project_id INT NULL,
             salary DECIMAL(10,2) DEFAULT 0.0,
             petrol DECIMAL(10,2) DEFAULT 0.0,
