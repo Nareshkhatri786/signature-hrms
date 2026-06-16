@@ -1,6 +1,9 @@
 <?php
 declare(strict_types=1);
 
+// Set default timezone to Indian Standard Time (IST)
+date_default_timezone_set('Asia/Kolkata');
+
 // Security Key
 define('SETUP_KEY', 'setup_signature_2026');
 

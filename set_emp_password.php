@@ -1,4 +1,6 @@
 <?php
+// Set default timezone to Indian Standard Time (IST)
+date_default_timezone_set('Asia/Kolkata');
 // ONE-TIME password setter for employees
 // DELETE THIS FILE after use!
 // Usage: visit https://hrms.diyacrm.in/set_emp_password.php?key=HrmsSetup2026
